@@ -1,0 +1,391 @@
+# Модель SIR: Эпидемиологическое моделирование распространения инфекции
+
+**Цель работы:** Исследовать динамику распространения инфекционного заболевания
+с помощью классической компартментальной модели SIR.
+
+Модель SIR (Susceptible-Infectious-Recovered) — это фундаментальная эпидемиологическая
+модель, которая делит популяцию на три группы:
+- **S (Susceptible)** — восприимчивые к инфекции
+- **I (Infectious)** — инфицированные и заразные
+- **R (Recovered)** — выздоровевшие (приобретшие иммунитет)
+
+## 1. Инициализация проекта и загрузка пакетов
+
+Подключаем необходимые библиотеки:
+- `DifferentialEquations`, `SimpleDiffEq` — для решения ОДУ
+- `DataFrames`, `Tables` — для работы с данными
+- `Plots`, `StatsPlots` — для визуализации
+- `LaTeXStrings` — для красивых математических формул
+- `BenchmarkTools` — для оценки производительности
+
+```{julia}
+using DrWatson
+@quickactivate "project"
+using DifferentialEquations
+using SimpleDiffEq
+using Tables
+using DataFrames
+using StatsPlots
+using LaTeXStrings
+using Plots
+gr()
+default(fmt=:png)
+using BenchmarkTools
+```
+
+Определяем имя скрипта для организации выходных файлов
+
+```{julia}
+script_name = splitext(basename(PROGRAM_FILE))[1]
+mkpath(plotsdir(script_name))
+mkpath(datadir(script_name))
+```
+
+## 2. Математическая модель SIR
+
+### 2.1 Система дифференциальных уравнений
+
+Динамика эпидемии описывается следующей системой:
+
+$$
+\begin{cases}
+\frac{dS}{dt} = -\beta \cdot c \cdot \frac{I}{N} \cdot S & \text{(скорость заражения восприимчивых)} \\
+\frac{dI}{dt} = \beta \cdot c \cdot \frac{I}{N} \cdot S - \gamma I & \text{(изменение числа инфицированных)} \\
+\frac{dR}{dt} = \gamma I & \text{(скорость выздоровления)}
+\end{cases}
+$$
+
+где:
+- $S$, $I$, $R$ — численности соответствующих групп
+- $N = S + I + R$ — общая численность популяции
+- $\beta$ — вероятность заражения при контакте
+- $c$ — среднее число контактов в день
+- $\gamma$ — скорость выздоровления (обратная средней длительности болезни)
+
+```{julia}
+function sir_ode!(du, u, p, t)
+    (S, I, R) = u
+    (β, c, γ) = p
+    N = S + I + R
+
+    @inbounds begin
+        du[1] = -β * c * I / N * S           # dS/dt
+        du[2] = β * c * I / N * S - γ * I    # dI/dt
+        du[3] = γ * I                         # dR/dt
+    end
+    nothing
+end
+```
+
+## 3. Параметры модели и начальные условия
+
+Задаем параметры для типичной эпидемии гриппа:
+- Шаг интегрирования: 0.1 дня
+- Длительность моделирования: 40 дней
+- Начальная популяция: 1000 человек (990 восприимчивых, 10 инфицированных)
+
+```{julia}
+δt = 0.1
+tmax = 40.0
+tspan = (0.0, tmax)
+u0 = [990.0, 10.0, 0.0]  # S, I, R
+p = [0.05, 10.0, 0.25]    # β, c, γ
+```
+
+### 3.1 Базовое репродуктивное число R₀
+
+**Ключевой эпидемиологический показатель** — базовое репродуктивное число:
+
+$$R_0 = \frac{c \cdot \beta}{\gamma}$$
+
+Интерпретация:
+- $R_0 < 1$: эпидемия затухает
+- $R_0 > 1$: эпидемия распространяется
+- $R_0 = 1$: эндемическая ситуация
+
+```{julia}
+R0 = (p[2] * p[1]) / p[3]  # R0 = (c * β) / γ
+```
+
+## 4. Численное решение системы
+
+Создаем задачу и решаем её методом Цитоврата-5 (адаптивный метод Рунге-Кутты 5-го порядка)
+
+```{julia}
+prob_ode = ODEProblem(sir_ode!, u0, tspan, p)
+sol_ode = solve(prob_ode, dt = δt)
+```
+
+## 5. Подготовка данных для анализа
+
+Преобразуем решение в удобный формат DataFrame
+
+```{julia}
+df_ode = DataFrame(Tables.table(sol_ode'))
+rename!(df_ode, ["S", "I", "R"])
+df_ode[!, :t] = sol_ode.t
+df_ode[!, :N] = df_ode.S + df_ode.I + df_ode.R  # Общая численность популяции
+```
+
+## 6. Информационный вывод о модели
+
+```{julia}
+println("="^60)
+println("МОДЕЛЬ SIR: Эпидемиологическое моделирование")
+println("="^60)
+println("\nПараметры модели:")
+println("β (вероятность заражения) = ", p[1])
+println("c (среднее число контактов) = ", p[2])
+println("γ (скорость выздоровления) = ", p[3])
+println("R0 = c * β / γ = ", round(R0, digits=3))
+println("Средняя продолжительность болезни = ", round(1/p[3], digits=2), " дней")
+println("\nНачальные условия:")
+println("S0 = ", u0[1], ", I0 = ", u0[2], ", R0 = ", u0[3])
+```
+
+## 7. Визуализация результатов
+
+### 7.1 График 1: Динамика всех трех групп
+
+Отображаем изменение численности восприимчивых, инфицированных и выздоровевших
+во времени.
+
+```{julia}
+plt1 = @df df_ode plot(:t,
+                       [:S :I :R],
+                       label=[L"S(t)" L"I(t)" L"R(t)"],
+                       xlabel="Время, дни",
+                       ylabel="Количество людей",
+                       title="Модель SIR: Динамика эпидемии",
+                       linewidth=2,
+                       legend=:right,
+                       grid=true,
+                       size=(800, 500))
+```
+
+Добавляем аннотацию с параметрами модели
+
+```{julia}
+annotate!(plt1, maximum(df_ode.t) * 0.7, maximum(df_ode.N) * 0.8,
+          text("Параметры:\nβ = $(p[1])\nc = $(p[2])\nγ = $(p[3])\nR0 = $(round(R0, digits=2))",
+               8, :left))
+```
+
+### 7.2 График 2: Динамика инфицированных
+
+Фокусируемся на кривой заболеваемости и отмечаем пик эпидемии.
+
+```{julia}
+plt2 = @df df_ode plot(:t, :I,
+                       label=L"I(t)",
+                       xlabel="Время, дни",
+                       ylabel="Количество инфицированных",
+                       title="Динамика числа зараженных",
+                       color=:red,
+                       linewidth=2,
+                       fill=(0, 0.3, :red),
+                       grid=true,
+                       size=(800, 400))
+```
+
+Находим и отмечаем пик эпидемии
+
+```{julia}
+peak_idx = argmax(df_ode.I)
+peak_time = df_ode.t[peak_idx]
+peak_value = df_ode.I[peak_idx]
+
+vline!(plt2, [peak_time], color=:black, linestyle=:dash, label=false, linewidth=1)
+annotate!(plt2, peak_time, peak_value * 1.05,
+          text("Пик: $(round(peak_value, digits=1)) на $(round(peak_time, digits=1)) день",
+               8, :top))
+```
+
+### 7.3 График 3: Логарифмический масштаб
+
+Логарифмическая шкала помогает увидеть экспоненциальную фазу роста эпидемии
+(прямая линия на логарифмическом графике соответствует экспоненциальному росту).
+
+```{julia}
+plt3 = @df df_ode plot(:t, :I,
+                       label=L"I(t)",
+                       xlabel="Время, дни",
+                       ylabel="Количество инфицированных (лог. масштаб)",
+                       title="Экспоненциальный рост (лог. шкала)",
+                       yscale=:log10,
+                       color=:red,
+                       linewidth=2,
+                       grid=true,
+                       size=(800, 400))
+```
+
+### 7.4 График 4: Доли населения (в процентах)
+
+Нормированные кривые показывают относительный вклад каждой группы.
+
+```{julia}
+plt4 = @df df_ode plot(:t,
+                       [:S :I :R] ./ df_ode.N .* 100,
+                       label=[L"S(t)/N" L"I(t)/N" L"R(t)/N"],
+                       xlabel="Время, дни",
+                       ylabel="Доля популяции, %",
+                       title="Динамика эпидемии (в процентах)",
+                       linewidth=2,
+                       legend=:right,
+                       grid=true,
+                       size=(800, 500))
+```
+
+Добавляем порог коллективного иммунитета, если эпидемия возможна
+
+```{julia}
+if R0 > 1
+    herd_immunity_threshold = (1 - 1/R0) * 100
+    hline!(plt4, [herd_immunity_threshold], color=:purple, linestyle=:dash,
+           label="Порог коллективного иммунитета ($(round(herd_immunity_threshold, digits=1))%)",
+           linewidth=1.5)
+end
+```
+
+### 7.5 График 5: Фазовый портрет (I vs S)
+
+Фазовая траектория показывает взаимосвязь между численностью восприимчивых
+и инфицированных.
+
+```{julia}
+plt5 = plot(df_ode.S, df_ode.I,
+            label="Фазовая траектория",
+            xlabel=L"S(t)",
+            ylabel=L"I(t)",
+            title="Фазовый портрет SIR модели",
+            color=:blue,
+            linewidth=2,
+            grid=true,
+            size=(800, 500),
+            legend=:topright)
+```
+
+Добавляем стрелки для указания направления движения
+
+```{julia}
+for i in 1:50:length(df_ode.S)-1
+    plot!(plt5, [df_ode.S[i], df_ode.S[i+1]], [df_ode.I[i], df_ode.I[i+1]],
+          arrow=:closed, color=:blue, alpha=0.5, label=false)
+end
+```
+
+### 7.6 График 6: Эффективное репродуктивное число Rₑ
+
+$R_e(t) = R_0 \cdot \frac{S(t)}{N}$ — показывает текущую способность инфекции
+к распространению. Эпидемия затухает, когда $R_e < 1$.
+
+```{julia}
+df_ode[!, :Re] = R0 .* df_ode.S ./ df_ode.N
+
+plt6 = @df df_ode plot(:t, :Re,
+                       label=L"R_e(t)",
+                       xlabel="Время, дни",
+                       ylabel=L"R_e",
+                       title="Динамика эффективного репродуктивного числа",
+                       color=:green,
+                       linewidth=2,
+                       grid=true,
+                       size=(800, 400))
+```
+
+Отмечаем пороговое значение Rₑ = 1
+
+```{julia}
+hline!(plt6, [1.0], color=:red, linestyle=:dash, label="Порог эпидемии (Rₑ=1)", linewidth=1.5)
+```
+
+Находим момент, когда эпидемия начинает затухать
+
+```{julia}
+cross_idx = findfirst(x -> x < 1, df_ode.Re)
+if !isnothing(cross_idx) && cross_idx > 1
+    cross_time = df_ode.t[cross_idx]
+    vline!(plt6, [cross_time], color=:black, linestyle=:dash, label=false, linewidth=1)
+    annotate!(plt6, cross_time, 1.2,
+              text("Rₑ<1 с $(round(cross_time, digits=1)) дня", 8, :left))
+end
+```
+
+### 7.7 График 7: Компактная панель
+
+Собираем все основные визуализации в одной компактной панели
+
+```{julia}
+plt7 = plot(layout=(2, 3), size=(1200, 800))
+```
+
+Верхний ряд
+
+```{julia}
+plot!(plt7[1], df_ode.t, df_ode.S, label=L"S(t)", color=1, linewidth=2, title="Восприимчивые")
+plot!(plt7[2], df_ode.t, df_ode.I, label=L"I(t)", color=2, linewidth=2, title="Зараженные")
+plot!(plt7[3], df_ode.t, df_ode.R, label=L"R(t)", color=3, linewidth=2, title="Выздоровевшие")
+```
+
+Нижний ряд
+
+```{julia}
+plot!(plt7[4], df_ode.t, df_ode.I, label=L"I(t)", color=2, linewidth=2,
+      yscale=:log10, title="Лог. масштаб")
+plot!(plt7[5], df_ode.S, df_ode.I, label=false, color=4, linewidth=2,
+      title="Фазовый портрет", xlabel=L"S", ylabel=L"I")
+plot!(plt7[6], df_ode.t, df_ode.Re, label=L"R_e", color=:green, linewidth=2,
+      title=L"R_e(t)", hline=[1.0], linestyle=:dash, linecolor=:red)
+```
+
+## 8. Сохранение графиков
+
+```{julia}
+savefig(plt1, plotsdir(script_name, "sir_main.png"))
+savefig(plt2, plotsdir(script_name, "sir_infected.png"))
+savefig(plt3, plotsdir(script_name, "sir_log_scale.png"))
+savefig(plt4, plotsdir(script_name, "sir_percentages.png"))
+savefig(plt5, plotsdir(script_name, "sir_phase_portrait.png"))
+savefig(plt6, plotsdir(script_name, "sir_effective_R.png"))
+savefig(plt7, plotsdir(script_name, "sir_panel.png"))
+```
+
+## 9. Оценка производительности
+
+```{julia}
+println("\n" * "="^60)
+println("ОЦЕНКА ПРОИЗВОДИТЕЛЬНОСТИ")
+println("="^60)
+println("\nБенчмарк решения (время выполнения):")
+@benchmark solve(prob_ode, dt = δt)
+```
+
+## 10. Анализ результатов
+
+Вычисляем ключевые эпидемиологические показатели и сравниваем с теорией.
+
+```{julia}
+println("\n" * "="^60)
+println("АНАЛИЗ РЕЗУЛЬТАТОВ")
+println("="^60)
+
+println("\nОбщая численность популяции (контроль): N = ", round(df_ode.N[1], digits=1))
+println("Пиковое число зараженных: I_max = ", round(peak_value, digits=1))
+println("Время достижения пика: t_peak = ", round(peak_time, digits=1), " дней")
+println("Итоговое число переболевших: R(∞) = ", round(df_ode.R[end], digits=1))
+println("Доля переболевших: ", round(df_ode.R[end]/df_ode.N[1]*100, digits=1), "%")
+```
+
+### 10.1 Теоретические оценки
+
+Для модели SIR существуют аналитические соотношения, которые можно проверить
+по результатам численного моделирования.
+
+```{julia}
+if R0 > 1
+    println("\nТЕОРЕТИЧЕСКИЙ АНАЛИЗ:")
+    println("Порог коллективного иммунитета: ", round((1-1/R0)*100, digits=1), "%")
+    println("Теоретический пик достигается при S/N = 1/R0 = ", round(1/R0, digits=3))
+end
+```
+
